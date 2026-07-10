@@ -53,7 +53,7 @@ func NewHandler(c *Config) (http.Handler, error) {
 		users: map[string]*handlerUser{},
 	}
 
-	if c.UserPermissions.useDirectories {
+	if c.useDirectories {
 		h.user.FileSystem = multiDir{
 			mounts:  c.Directories,
 			noSniff: c.NoSniff,
@@ -81,7 +81,7 @@ func NewHandler(c *Config) (http.Handler, error) {
 			},
 		}
 
-		if u.UserPermissions.useDirectories {
+		if u.useDirectories {
 			h.users[u.Username].FileSystem = multiDir{
 				mounts:  u.Directories,
 				noSniff: c.NoSniff,

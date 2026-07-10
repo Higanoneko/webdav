@@ -2,18 +2,24 @@ package lib
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/webdav"
 )
 
 var _ webdav.FileSystem = multiDir{}
+
+const windowsErrorNotSameDevice = syscall.Errno(17)
 
 type multiDir struct {
 	mounts  DirectoryMounts
@@ -98,7 +104,65 @@ func (m multiDir) Rename(ctx context.Context, oldName, newName string) error {
 
 	oldPath := oldMount.filePath(oldRest)
 	newPath := newMount.filePath(newRest)
-	return os.Rename(oldPath, newPath)
+	if err := os.Rename(oldPath, newPath); err != nil {
+		if isCrossDeviceError(err) {
+			return renameAcrossMount(oldPath, newPath)
+		}
+		return err
+	}
+	return nil
+}
+
+func renameAcrossMount(oldPath, newPath string) error {
+	info, err := os.Lstat(oldPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(oldPath)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(target, newPath); err != nil {
+			return err
+		}
+		return os.Remove(oldPath)
+	}
+
+	source, err := fs.Sub(os.DirFS(filepath.Dir(oldPath)), filepath.Base(oldPath))
+	if err != nil {
+		return err
+	}
+	if err := os.CopyFS(newPath, source); err != nil {
+		_ = os.RemoveAll(newPath)
+		return err
+	}
+	if err := copyMetadata(oldPath, newPath); err != nil {
+		_ = os.RemoveAll(newPath)
+		return err
+	}
+	return os.RemoveAll(oldPath)
+}
+
+func copyMetadata(oldPath, newPath string) error {
+	return filepath.Walk(oldPath, func(name string, info os.FileInfo, err error) error {
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return err
+		}
+		rel, err := filepath.Rel(oldPath, name)
+		if err != nil {
+			return err
+		}
+		newName := filepath.Join(newPath, rel)
+		if err := os.Chmod(newName, info.Mode().Perm()); err != nil {
+			return err
+		}
+		return os.Chtimes(newName, info.ModTime(), info.ModTime())
+	})
+}
+
+func isCrossDeviceError(err error) bool {
+	return errors.Is(err, syscall.EXDEV) || runtime.GOOS == "windows" && errors.Is(err, windowsErrorNotSameDevice)
 }
 
 func (m multiDir) Stat(ctx context.Context, name string) (os.FileInfo, error) {
