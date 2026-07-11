@@ -129,19 +129,46 @@ func renameAcrossMount(oldPath, newPath string) error {
 		return os.Remove(oldPath)
 	}
 
-	source, err := fs.Sub(os.DirFS(filepath.Dir(oldPath)), filepath.Base(oldPath))
-	if err != nil {
-		return err
-	}
-	if err := os.CopyFS(newPath, source); err != nil {
-		_ = os.RemoveAll(newPath)
-		return err
+	if info.Mode().IsRegular() {
+		if err := copyRegularFile(oldPath, newPath); err != nil {
+			return err
+		}
+	} else {
+		source, err := fs.Sub(os.DirFS(filepath.Dir(oldPath)), filepath.Base(oldPath))
+		if err != nil {
+			return err
+		}
+		if err := os.CopyFS(newPath, source); err != nil {
+			_ = os.RemoveAll(newPath)
+			return err
+		}
 	}
 	if err := copyMetadata(oldPath, newPath); err != nil {
 		_ = os.RemoveAll(newPath)
 		return err
 	}
 	return os.RemoveAll(oldPath)
+}
+
+func copyRegularFile(oldPath, newPath string) error {
+	source, err := os.Open(oldPath)
+	if err != nil {
+		return err
+	}
+
+	target, err := os.OpenFile(newPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		_ = source.Close()
+		return err
+	}
+
+	_, copyErr := io.Copy(target, source)
+	copyErr = errors.Join(copyErr, target.Close(), source.Close())
+	if copyErr != nil {
+		_ = os.Remove(newPath)
+		return copyErr
+	}
+	return nil
 }
 
 func copyMetadata(oldPath, newPath string) error {
